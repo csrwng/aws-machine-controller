@@ -14,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	coapi "github.com/openshift/cluster-operator/pkg/api"
-	_ "github.com/openshift/cluster-operator/pkg/apis/clusteroperator"
 	cov1 "github.com/openshift/cluster-operator/pkg/apis/clusteroperator/v1alpha1"
 )
 
@@ -80,11 +79,6 @@ func (a *AWSActuator) Create(cluster *clusterv1.Cluster, machine *clusterv1.Mach
 }
 
 func (a *AWSActuator) CreateMachine(cluster *clusterv1.Cluster, machine *clusterv1.Machine) (*ec2.Reservation, error) {
-	svc, err := a.createSVC()
-	if err != nil {
-		return nil, err
-	}
-
 	// Extract cluster operator cluster
 	coCluster, err := a.clusterOperatorCluster(cluster)
 	if err != nil {
@@ -96,6 +90,10 @@ func (a *AWSActuator) CreateMachine(cluster *clusterv1.Cluster, machine *cluster
 	}
 
 	region := coCluster.Spec.Hardware.AWS.Region
+	svc, err := a.createSVC(region)
+	if err != nil {
+		return nil, err
+	}
 
 	// For now, we store the machineSet resource in the machine.
 	// It really should be the machine resource, but it's not yet
@@ -205,6 +203,8 @@ func (a *AWSActuator) CreateMachine(cluster *clusterv1.Cluster, machine *cluster
 		Tags:         tagList,
 	}
 
+	_ = tagInstance
+
 	// For now, these are fixed
 	blkDeviceMappings := []*ec2.BlockDeviceMapping{
 		&ec2.BlockDeviceMapping{
@@ -239,14 +239,12 @@ func (a *AWSActuator) CreateMachine(cluster *clusterv1.Cluster, machine *cluster
 		MaxCount:     aws.Int64(1),
 		UserData:     &userDataEnc,
 		KeyName:      aws.String(coCluster.Spec.Hardware.AWS.KeyPairName),
-		SubnetId:     describeSubnetsResult.Subnets[0].SubnetId,
 		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{
 			Name: aws.String(defaultIAMRole),
 		},
-		SecurityGroupIds:    securityGroupIds,
 		BlockDeviceMappings: blkDeviceMappings,
-		TagSpecifications:   []*ec2.TagSpecification{tagInstance},
-		NetworkInterfaces:   networkInterfaces,
+		// TagSpecifications:   []*ec2.TagSpecification{tagInstance},
+		NetworkInterfaces: networkInterfaces,
 	}
 
 	runResult, err := svc.RunInstances(&inputConfig)
@@ -311,8 +309,8 @@ func (a *AWSActuator) Exists(*clusterv1.Machine) (bool, error) {
 }
 
 // Helper function to create SVC
-func (a *AWSActuator) createSVC() (*ec2.EC2, error) {
-	s, err := session.NewSession()
+func (a *AWSActuator) createSVC(region string) (*ec2.EC2, error) {
+	s, err := session.NewSession(&aws.Config{Region: aws.String(region)})
 	if err != nil {
 		return nil, err
 	}
@@ -320,8 +318,7 @@ func (a *AWSActuator) createSVC() (*ec2.EC2, error) {
 }
 
 func (a *AWSActuator) clusterOperatorCluster(c *clusterv1.Cluster) (*cov1.Cluster, error) {
-	gvk := cov1.SchemeGroupVersion.WithKind("Cluster")
-	obj, _, err := a.codecFactory.UniversalDecoder().Decode([]byte(c.Spec.ProviderConfig), &gvk, nil)
+	obj, _, err := a.codecFactory.UniversalDecoder(cov1.SchemeGroupVersion).Decode([]byte(c.Spec.ProviderConfig), nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -333,8 +330,7 @@ func (a *AWSActuator) clusterOperatorCluster(c *clusterv1.Cluster) (*cov1.Cluste
 }
 
 func (a *AWSActuator) clusterOperatorMachineSet(m *clusterv1.Machine) (*cov1.MachineSet, *cov1.ClusterVersion, error) {
-	gvk := cov1.SchemeGroupVersion.WithKind("MachineSet")
-	obj, _, err := a.codecFactory.UniversalDecoder().Decode(m.Spec.ProviderConfig.Value.Raw, &gvk, nil)
+	obj, _, err := a.codecFactory.UniversalDecoder(cov1.SchemeGroupVersion).Decode(m.Spec.ProviderConfig.Value.Raw, nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -346,8 +342,7 @@ func (a *AWSActuator) clusterOperatorMachineSet(m *clusterv1.Machine) (*cov1.Mac
 	if !ok {
 		return nil, nil, fmt.Errorf("Missing ClusterVersion resource annotation in MachineSet %#v", coMachineSet)
 	}
-	clusterVersionGVK := cov1.SchemeGroupVersion.WithKind("ClusterVersion")
-	obj, _, err = a.codecFactory.UniversalDecoder().Decode([]byte(rawClusterVersion), &clusterVersionGVK, nil)
+	obj, _, err = a.codecFactory.UniversalDecoder(cov1.SchemeGroupVersion).Decode([]byte(rawClusterVersion), nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
